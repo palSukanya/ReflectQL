@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ReflectQL — Self-Correcting SQL Agent</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  html, body { height: 100%; }
+  .chat-scroll::-webkit-scrollbar { width: 8px; }
+  .chat-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; }
+  .chat-scroll::-webkit-scrollbar-track { background: transparent; }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner {
+    width: 16px; height: 16px;
+    border: 2px solid #e2e8f0;
+    border-top-color: #4f46e5;
+    border-radius: 9999px;
+    animation: spin 0.7s linear infinite;
+  }
+
+  details > summary { list-style: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  details[open] .chevron { transform: rotate(90deg); }
+  .chevron { transition: transform 0.15s ease; }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-800">
+
+<div class="h-screen flex flex-col">
+
+  <!-- Header -->
+  <header class="border-b border-slate-200 bg-white px-6 py-4 flex items-center justify-between shrink-0">
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 rounded-lg bg-indigo-600 text-white flex items-center justify-center font-semibold text-sm">
+        RQ
+      </div>
+      <div>
+        <h1 class="text-lg font-semibold text-slate-900 leading-tight">ReflectQL</h1>
+        <p class="text-xs text-slate-500 leading-tight">Self-correcting SQL agent for support tickets</p>
+      </div>
+    </div>
+    <span id="conn-status" class="text-xs px-2.5 py-1 rounded-full bg-slate-100 text-slate-500">checking API…</span>
+  </header>
+
+  <div class="flex-1 flex overflow-hidden">
+
+    <!-- Sidebar: schema -->
+    <aside class="hidden md:flex md:flex-col w-72 border-r border-slate-200 bg-white shrink-0 overflow-y-auto chat-scroll">
+      <div class="px-4 py-3 border-b border-slate-100 sticky top-0 bg-white">
+        <h2 class="text-sm font-semibold text-slate-700">Database schema</h2>
+        <p class="text-xs text-slate-400 mt-0.5">support_tickets.db</p>
+      </div>
+      <div id="schema-panel" class="px-4 py-3 space-y-3 text-sm">
+        <p class="text-slate-400 text-xs">Loading schema…</p>
+      </div>
+    </aside>
+
+    <!-- Chat column -->
+    <main class="flex-1 flex flex-col min-w-0">
+
+      <div id="chat-window" class="flex-1 overflow-y-auto chat-scroll px-4 md:px-8 py-6 space-y-5">
+        <!-- Welcome bubble -->
+        <div class="max-w-2xl">
+          <div class="bg-white border border-slate-200 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm">
+            <p class="text-sm text-slate-600">
+              Ask a question about the support ticket data — e.g.
+              <em>"How many tickets are resolved?"</em> or
+              <em>"Which agent handled the most urgent tickets?"</em>.
+              The schema on the left is intentionally messy, so if a query fails,
+              I'll automatically reflect on the error and retry (up to 3 times).
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Input bar -->
+      <form id="ask-form" class="border-t border-slate-200 bg-white px-4 md:px-8 py-4 shrink-0">
+        <div class="flex items-end gap-3 max-w-3xl mx-auto">
+          <textarea
+            id="question-input"
+            rows="1"
+            placeholder="Ask a question about the support tickets…"
+            class="flex-1 resize-none rounded-xl border border-slate-300 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+          ></textarea>
+          <button
+            type="submit"
+            id="ask-button"
+            class="shrink-0 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-5 py-3 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Ask
+          </button>
+        </div>
+      </form>
+    </main>
+  </div>
+</div>
+
+<script>
+  const API_BASE = "http://127.0.0.1:8000";
+
+  const chatWindow = document.getElementById("chat-window");
+  const askForm = document.getElementById("ask-form");
+  const questionInput = document.getElementById("question-input");
+  const askButton = document.getElementById("ask-button");
+  const schemaPanel = document.getElementById("schema-panel");
+  const connStatus = document.getElementById("conn-status");
+
+  function scrollToBottom() {
+    chatWindow.scrollTop = chatWindow.scrollHeight;
+  }
+
+  function addUserBubble(text) {
+    const wrap = document.createElement("div");
+    wrap.className = "flex justify-end";
+    wrap.innerHTML = `
+      <div class="max-w-2xl bg-indigo-600 text-white rounded-2xl rounded-tr-sm px-4 py-3 shadow-sm">
+        <p class="text-sm whitespace-pre-wrap">${escapeHtml(text)}</p>
+      </div>`;
+    chatWindow.appendChild(wrap);
+    scrollToBottom();
+  }
+
+  function addLoadingBubble() {
+    const wrap = document.createElement("div");
+    wrap.className = "flex justify-start";
+    wrap.id = "loading-bubble";
+    wrap.innerHTML = `
+      <div class="max-w-2xl bg-white border border-slate-200 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm flex items-center gap-2">
+        <div class="spinner"></div>
+        <span class="text-sm text-slate-500">Generating and running SQL…</span>
+      </div>`;
+    chatWindow.appendChild(wrap);
+    scrollToBottom();
+    return wrap;
+  }
+
+  function attemptsBadge(attempts, success) {
+    if (success && attempts <= 1) {
+      return `<span class="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">✓ 1st try</span>`;
+    }
+    if (success) {
+      return `<span class="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">✓ succeeded after ${attempts} attempts</span>`;
+    }
+    return `<span class="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200">✗ failed after ${attempts} attempts</span>`;
+  }
+
+  function addAnswerBubble(data) {
+    const wrap = document.createElement("div");
+    wrap.className = "flex justify-start";
+    wrap.innerHTML = `
+      <div class="max-w-2xl bg-white border border-slate-200 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm space-y-2">
+        <p class="text-sm text-slate-700 whitespace-pre-wrap">${escapeHtml(data.answer)}</p>
+        <div class="flex items-center gap-2 pt-1">
+          ${attemptsBadge(data.attempts, data.success)}
+        </div>
+        <details class="pt-1 border-t border-slate-100">
+          <summary class="cursor-pointer text-xs text-slate-500 hover:text-slate-700 flex items-center gap-1 pt-2">
+            <span class="chevron">▶</span> View SQL query used
+          </summary>
+          <pre class="mt-2 text-xs bg-slate-900 text-slate-100 rounded-lg p-3 overflow-x-auto"><code>${escapeHtml(data.sql_query || "(no query available)")}</code></pre>
+        </details>
+      </div>`;
+    chatWindow.appendChild(wrap);
+    scrollToBottom();
+  }
+
+  function addErrorBubble(message) {
+    const wrap = document.createElement("div");
+    wrap.className = "flex justify-start";
+    wrap.innerHTML = `
+      <div class="max-w-2xl bg-rose-50 border border-rose-200 rounded-2xl rounded-tl-sm px-4 py-3">
+        <p class="text-sm text-rose-700">${escapeHtml(message)}</p>
+      </div>`;
+    chatWindow.appendChild(wrap);
+    scrollToBottom();
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement("div");
+    div.textContent = str ?? "";
+    return div.innerHTML;
+  }
+
+  async function loadSchema() {
+    try {
+      const res = await fetch(`${API_BASE}/schema`);
+      if (!res.ok) throw new Error("bad response");
+      const schema = await res.json();
+      renderSchema(schema);
+      connStatus.textContent = "API connected";
+      connStatus.className = "text-xs px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700";
+    } catch (err) {
+      schemaPanel.innerHTML = `<p class="text-xs text-rose-500">Couldn't load schema. Is the backend running at ${API_BASE}?</p>`;
+      connStatus.textContent = "API offline";
+      connStatus.className = "text-xs px-2.5 py-1 rounded-full bg-rose-50 text-rose-600";
+    }
+  }
+
+  function renderSchema(schema) {
+    schemaPanel.innerHTML = "";
+    Object.keys(schema).sort().forEach((table) => {
+      const cols = schema[table];
+      const block = document.createElement("div");
+      block.className = "rounded-lg border border-slate-100 overflow-hidden";
+      const colRows = cols.map(c => `
+        <div class="flex items-center justify-between px-3 py-1 text-xs ${c.primary_key ? 'bg-indigo-50/60' : ''}">
+          <span class="font-mono text-slate-700">${escapeHtml(c.name)}${c.primary_key ? ' 🔑' : ''}</span>
+          <span class="text-slate-400">${escapeHtml(c.type)}</span>
+        </div>`).join("");
+      block.innerHTML = `
+        <div class="bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-600">${escapeHtml(table)}</div>
+        <div class="divide-y divide-slate-50">${colRows}</div>`;
+      schemaPanel.appendChild(block);
+    });
+  }
+
+  async function handleAsk(question) {
+    addUserBubble(question);
+    const loadingBubble = addLoadingBubble();
+    askButton.disabled = true;
+
+    try {
+      const res = await fetch(`${API_BASE}/ask`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question }),
+      });
+      loadingBubble.remove();
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        addErrorBubble(err.detail || `Request failed (${res.status}).`);
+        return;
+      }
+      const data = await res.json();
+      addAnswerBubble(data);
+    } catch (err) {
+      loadingBubble.remove();
+      addErrorBubble(`Couldn't reach the backend at ${API_BASE}. Is uvicorn running?`);
+    } finally {
+      askButton.disabled = false;
+    }
+  }
+
+  askForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const question = questionInput.value.trim();
+    if (!question) return;
+    questionInput.value = "";
+    handleAsk(question);
+  });
+
+  questionInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      askForm.requestSubmit();
+    }
+  });
+
+  loadSchema();
+</script>
+
+</body>
+</html>
