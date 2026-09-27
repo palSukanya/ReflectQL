@@ -1,15 +1,28 @@
-# ReflectQL — Self-Correcting SQL Agent
+<div align="center">
+
+# ReflectQL : Self-Correcting SQL Agent
+
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-Agent%20Orchestration-1C3C3C)](https://langchain-ai.github.io/langgraph/)
+[![Google Gemini](https://img.shields.io/badge/LLM-Google%20Gemini-4285F4?logo=googlegemini&logoColor=white)](https://ai.google.dev/)
+[![SQLite](https://img.shields.io/badge/Database-SQLite-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![Tailwind CSS](https://img.shields.io/badge/UI-Tailwind%20CSS-38BDF8?logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
+
+</div>
+
+<br>
 
 A small web app where you ask a plain-English question about a support ticket
 system, an LLM turns it into SQL, runs it against a local SQLite database,
-and — if the query is wrong — **automatically catches the error, reflects on
+and if the query is wrong **automatically catches the error, reflects on
 it, and retries** (up to 3 times) before answering you.
 
 The whole point of this project is to make that self-correction loop visible
 and demonstrable, not to hide it behind a clean "it just worked" answer.
 
 ```
-project/
+ReflectQL/
 ├── backend/
 │   ├── main.py            FastAPI app (POST /ask, GET /schema)
 │   ├── agent.py            LangGraph state graph (the self-correction loop)
@@ -21,6 +34,19 @@ project/
 ├── README.md
 └── .gitignore
 ```
+
+<br>
+
+## Table of Contents
+
+- [Setup](#setup)
+- [Why the self-correction loop exists](#why-the-self-correction-loop-exists)
+- [How the LangGraph loop works](#how-the-langgraph-loop-works)
+- [Inspect the database directly](#inspect-the-database-directly)
+- [Example questions to try in a demo](#example-questions-to-try-in-a-demo)
+- [Screenshot](#screenshot)
+
+---
 
 ## Setup
 
@@ -60,6 +86,8 @@ project/
    > `python -m http.server 5500 --directory frontend` and visit
    > `http://127.0.0.1:5500`.
 
+---
+
 ## Why the self-correction loop exists
 
 The database schema for this demo was built to look like *real* production
@@ -95,20 +123,36 @@ agent's execution errors and suspiciously-empty results become a signal to
 re-read the schema and try again**, and it shows you exactly how many
 attempts that took.
 
+---
+
 ## How the LangGraph loop works
 
-```
-generate_sql --> execute_sql --(SQL error, retries left)--> reflect_and_retry --,
-                     |                                                          |
-                     |<-----------------------------------------------------------
-                     |
-                     |--(0 rows, looks wrong, 1st time)--> reflect_and_retry --,
-                     |                                                          |
-                     |<-----------------------------------------------------------
-                     |
-                     |--(success)--> format_answer --> END
-                     |
-                     `--(retries exhausted)--> give_up --> END
+```mermaid
+flowchart TD
+    Start([Question received]) --> Gen[generate_sql]
+    Gen --> Exec[execute_sql]
+    Exec --> Route{route_after_execute}
+    Route -->|SQL error, retries left| Reflect[reflect_and_retry]
+    Route -->|Empty/zero result, 1st time| Reflect
+    Route -->|Success| Format[format_answer]
+    Route -->|Retries exhausted| Give[give_up]
+    Reflect --> Exec
+    Format --> End([END])
+    Give --> End
+
+    classDef terminal fill:#e2e8f0,stroke:#334155,color:#1e293b
+    classDef process fill:#e0e7ff,stroke:#4338ca,color:#312e81
+    classDef decision fill:#fef3c7,stroke:#b45309,color:#78350f
+    classDef retry fill:#ede9fe,stroke:#6d28d9,color:#4c1d95
+    classDef fail fill:#fee2e2,stroke:#b91c1c,color:#7f1d1d
+    classDef success fill:#dcfce7,stroke:#15803d,color:#14532d
+
+    class Start,End terminal
+    class Gen,Exec process
+    class Route decision
+    class Reflect retry
+    class Give fail
+    class Format success
 ```
 
 - **`generate_sql`** — LLM writes a first-pass SQL query from the question,
@@ -128,6 +172,8 @@ The API response (and the UI's "✓ succeeded after N attempts" badge) always
 reports the real attempt count and the exact final SQL query used, so the
 self-correction is demonstrable, not hidden.
 
+---
+
 ## Inspect the database directly
 
 To check the agent's answers by hand, run this in your terminal (from the project root):
@@ -140,6 +186,8 @@ SELECT status, COUNT(*) FROM tickets GROUP BY status;
 ```
 Type `.quit` to exit back to your normal terminal.
 
+---
+
 ## Example questions to try in a demo
 
 - "How many tickets are currently open?"
@@ -150,8 +198,8 @@ Type `.quit` to exit back to your normal terminal.
 - "Which agent has the most activity logged against their tickets?"
 - "List the 5 most recent billing issue tickets."
 
+---
+
 ## Screenshot
 
-```
 ![ReflectQL screenshot](screenshot.png)
-```
