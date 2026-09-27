@@ -33,7 +33,7 @@ from database import DB_PATH, get_schema_text
 load_dotenv()
 
 MAX_RETRIES = 3
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
 
 # ----------------------------------------------------------------------------
